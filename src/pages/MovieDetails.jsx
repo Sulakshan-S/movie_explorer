@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Container,
@@ -40,7 +40,7 @@ export const MovieDetails = () => {
 
   const abortControllerRef = useRef(null);
 
-  const fetchDetails = async () => {
+  const fetchDetails = useCallback(async () => {
     if (!id) return;
 
     if (abortControllerRef.current) {
@@ -71,7 +71,7 @@ export const MovieDetails = () => {
         setLoading(false);
       }
     }
-  };
+  }, [id]);
 
   useEffect(() => {
     fetchDetails();
@@ -82,7 +82,7 @@ export const MovieDetails = () => {
         abortControllerRef.current.abort();
       }
     };
-  }, [id]);
+  }, [fetchDetails]);
 
   // Find first YouTube video of type "Trailer"
   const trailerVideo = movie?.videos?.results?.find(

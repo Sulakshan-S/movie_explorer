@@ -12,16 +12,17 @@ import {
 import ReplayIcon from '@mui/icons-material/Replay';
 import AllInclusiveIcon from '@mui/icons-material/AllInclusive';
 import TouchAppIcon from '@mui/icons-material/TouchApp';
+import RotateLeftIcon from '@mui/icons-material/RotateLeft';
 import SearchBar from '../components/SearchBar';
 import MovieGrid from '../components/MovieGrid';
-import { getTrending, searchMovies } from '../api/tmdb';
+import FilterBar from '../components/FilterBar';
+import { getTrending, searchMovies, discoverMovies } from '../api/tmdb';
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
 import { TMDB_MAX_PAGE } from '../utils/constants';
 
 const STORAGE_QUERY_KEY = 'movie_explorer_last_query';
 const STORAGE_MODE_KEY = 'movie_explorer_pagination_mode';
 
-// Helper to append movies without duplicate IDs
 const dedupeMovies = (existing, incoming) => {
   const existingIds = new Set(existing.map((m) => m.id));
   const newItems = incoming.filter((m) => !existingIds.has(m.id));
@@ -45,9 +46,14 @@ export const Home = () => {
     }
   });
 
+  const [filters, setFilters] = useState({
+    genre: '',
+    year: '',
+    minRating: 0,
+  });
+
   const [movies, setMovies] = useState([]);
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -56,54 +62,110 @@ export const Home = () => {
   const abortControllerRef = useRef(null);
   const loadMoreAbortRef = useRef(null);
 
-  // Fetch first page of results
-  const fetchFirstPage = useCallback(async (searchQuery) => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    if (loadMoreAbortRef.current) {
-      loadMoreAbortRef.current.abort();
-    }
+  const hasActiveFilters = Boolean(
+    filters.genre || filters.year || (Number(filters.minRating) > 0)
+  );
 
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
+  // Fetch movies for a specific page with current query and filters
+  const executeFetch = useCallback(
+    async (targetPage, currentQuery, currentFilters, signal) => {
+      const trimmed = currentQuery.trim();
+      const activeFilters = Boolean(
+        currentFilters.genre || currentFilters.year || Number(currentFilters.minRating) > 0
+      );
 
-    setLoading(true);
-    setLoadingMore(false);
-    setError(null);
-    setPage(1);
-
-    try {
       let data;
-      const trimmed = searchQuery.trim();
 
-      if (trimmed) {
-        data = await searchMovies(trimmed, 1, undefined, controller.signal);
+      if (!trimmed && activeFilters) {
+        // Mode 1: No query + active filters -> discoverMovies
+        data = await discoverMovies(
+          {
+            page: targetPage,
+            genre: currentFilters.genre || undefined,
+            year: currentFilters.year || undefined,
+            minRating:
+              Number(currentFilters.minRating) > 0 ? currentFilters.minRating : undefined,
+          },
+          signal
+        );
+      } else if (trimmed && activeFilters) {
+        // Mode 2: Search query + active filters -> searchMovies with year + client-side filter
+        data = await searchMovies(
+          trimmed,
+          targetPage,
+          currentFilters.year || undefined,
+          signal
+        );
+
+        let filtered = data?.results || [];
+        if (currentFilters.genre) {
+          const targetGenreId = Number(currentFilters.genre);
+          filtered = filtered.filter((m) => m.genre_ids?.includes(targetGenreId));
+        }
+        if (Number(currentFilters.minRating) > 0) {
+          filtered = filtered.filter(
+            (m) => Number(m.vote_average) >= Number(currentFilters.minRating)
+          );
+        }
+
+        return {
+          results: filtered,
+          total_pages: data?.total_pages || 1,
+        };
+      } else if (trimmed) {
+        // Mode 3: Search query with no filters
+        data = await searchMovies(trimmed, targetPage, undefined, signal);
       } else {
-        data = await getTrending(1, controller.signal);
+        // Mode 4: No query and no filters -> getTrending
+        data = await getTrending(targetPage, signal);
       }
 
-      const results = data?.results || [];
-      const total = Math.min(data?.total_pages || 1, TMDB_MAX_PAGE);
+      return {
+        results: data?.results || [],
+        total_pages: data?.total_pages || 1,
+      };
+    },
+    []
+  );
 
-      setMovies(results);
-      setTotalPages(total);
-      setHasMore(1 < total);
-    } catch (err) {
-      if (err.name === 'CanceledError' || err.name === 'AbortError' || err.message === 'canceled') {
-        return;
-      }
-      setError(err.message || 'Failed to fetch movies. Please try again.');
-      setMovies([]);
-      setHasMore(false);
-    } finally {
-      if (abortControllerRef.current === controller) {
-        setLoading(false);
-      }
-    }
-  }, []);
+  // Fetch page 1 (resets pagination)
+  const fetchFirstPage = useCallback(
+    async (currentQuery = query, currentFilters = filters) => {
+      if (abortControllerRef.current) abortControllerRef.current.abort();
+      if (loadMoreAbortRef.current) loadMoreAbortRef.current.abort();
 
-  // Fetch next page (for infinite scroll and load more)
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
+      setLoading(true);
+      setLoadingMore(false);
+      setError(null);
+      setPage(1);
+
+      try {
+        const data = await executeFetch(1, currentQuery, currentFilters, controller.signal);
+        const results = data.results;
+        const total = Math.min(data.total_pages, TMDB_MAX_PAGE);
+
+        setMovies(results);
+        setHasMore(1 < total);
+      } catch (err) {
+        if (err.name === 'CanceledError' || err.name === 'AbortError' || err.message === 'canceled') {
+          return;
+        }
+        setError(err.message || 'Failed to fetch movies. Please try again.');
+        setMovies([]);
+        setHasMore(false);
+      } finally {
+        if (abortControllerRef.current === controller) {
+          setLoading(false);
+        }
+      }
+    },
+    [query, filters, executeFetch]
+  );
+
+  // Fetch next page (infinite scroll & load more)
   const fetchNextPage = useCallback(async () => {
     if (loading || loadingMore || !hasMore || page >= TMDB_MAX_PAGE) {
       return;
@@ -120,21 +182,12 @@ export const Home = () => {
     const nextPage = page + 1;
 
     try {
-      let data;
-      const trimmed = query.trim();
-
-      if (trimmed) {
-        data = await searchMovies(trimmed, nextPage, undefined, controller.signal);
-      } else {
-        data = await getTrending(nextPage, controller.signal);
-      }
-
-      const incoming = data?.results || [];
-      const total = Math.min(data?.total_pages || 1, TMDB_MAX_PAGE);
+      const data = await executeFetch(nextPage, query, filters, controller.signal);
+      const incoming = data.results;
+      const total = Math.min(data.total_pages, TMDB_MAX_PAGE);
 
       setMovies((prev) => dedupeMovies(prev, incoming));
       setPage(nextPage);
-      setTotalPages(total);
       setHasMore(nextPage < total);
     } catch (err) {
       if (err.name === 'CanceledError' || err.name === 'AbortError' || err.message === 'canceled') {
@@ -146,7 +199,7 @@ export const Home = () => {
         setLoadingMore(false);
       }
     }
-  }, [loading, loadingMore, hasMore, page, query]);
+  }, [loading, loadingMore, hasMore, page, query, filters, executeFetch]);
 
   // Handle Search Input Change
   const handleSearch = useCallback(
@@ -161,10 +214,24 @@ export const Home = () => {
       } catch (err) {
         console.warn('Failed to persist query:', err);
       }
-      fetchFirstPage(newQuery);
+      fetchFirstPage(newQuery, filters);
     },
-    [fetchFirstPage]
+    [fetchFirstPage, filters]
   );
+
+  // Handle Filter Change
+  const handleFilterChange = (field, value) => {
+    const updated = { ...filters, [field]: value };
+    setFilters(updated);
+    fetchFirstPage(query, updated);
+  };
+
+  // Reset Filters
+  const handleResetFilters = () => {
+    const reset = { genre: '', year: '', minRating: 0 };
+    setFilters(reset);
+    fetchFirstPage(query, reset);
+  };
 
   // Handle Pagination Mode Change
   const handleModeChange = (event, nextMode) => {
@@ -175,8 +242,7 @@ export const Home = () => {
       } catch (err) {
         console.warn('Failed to persist pagination mode:', err);
       }
-      // Reset list and page to 1 when mode changes
-      fetchFirstPage(query);
+      fetchFirstPage(query, filters);
     }
   };
 
@@ -189,7 +255,7 @@ export const Home = () => {
 
   // Initial mount load
   useEffect(() => {
-    fetchFirstPage(query);
+    fetchFirstPage(query, filters);
     return () => {
       if (abortControllerRef.current) abortControllerRef.current.abort();
       if (loadMoreAbortRef.current) loadMoreAbortRef.current.abort();
@@ -197,14 +263,28 @@ export const Home = () => {
   }, []);
 
   const isSearching = Boolean(query.trim());
-  const headerTitle = isSearching ? `Results for "${query.trim()}"` : 'Trending Movies';
+  let headerTitle = 'Trending Movies';
+  if (isSearching && hasActiveFilters) {
+    headerTitle = `Results for "${query.trim()}" (Filtered)`;
+  } else if (isSearching) {
+    headerTitle = `Results for "${query.trim()}"`;
+  } else if (hasActiveFilters) {
+    headerTitle = 'Filtered Movies';
+  }
 
   return (
     <Container maxWidth="xl" sx={{ py: { xs: 3, sm: 4 } }}>
       {/* Search Bar */}
-      <Box sx={{ maxWidth: 640, mx: 'auto', mb: { xs: 3, sm: 4 } }}>
+      <Box sx={{ maxWidth: 640, mx: 'auto', mb: { xs: 2.5, sm: 3 } }}>
         <SearchBar initialValue={query} onSearch={handleSearch} />
       </Box>
+
+      {/* Filter Bar */}
+      <FilterBar
+        filters={filters}
+        onFilterChange={handleFilterChange}
+        onReset={handleResetFilters}
+      />
 
       {/* Header and Controls */}
       <Box
@@ -261,7 +341,7 @@ export const Home = () => {
               color="inherit"
               size="small"
               startIcon={<ReplayIcon />}
-              onClick={() => fetchFirstPage(query)}
+              onClick={() => fetchFirstPage(query, filters)}
             >
               Retry
             </Button>
@@ -284,13 +364,29 @@ export const Home = () => {
           }}
         >
           <Typography variant="h6" fontWeight="600" gutterBottom>
-            {isSearching ? `No movies found for "${query}"` : 'No movies available'}
+            {hasActiveFilters
+              ? 'No movies found matching your filters'
+              : isSearching
+              ? `No movies found for "${query}"`
+              : 'No movies available'}
           </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {isSearching
+          <Typography variant="body2" color="text.secondary" sx={{ mb: hasActiveFilters ? 3 : 0 }}>
+            {hasActiveFilters
+              ? 'Try widening your criteria or clearing selected filters.'
+              : isSearching
               ? 'Try checking for typos or searching for a different title.'
               : 'Please check back later.'}
           </Typography>
+          {hasActiveFilters && (
+            <Button
+              variant="outlined"
+              color="primary"
+              startIcon={<RotateLeftIcon />}
+              onClick={handleResetFilters}
+            >
+              Clear Filters
+            </Button>
+          )}
         </Box>
       )}
 

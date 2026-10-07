@@ -9,7 +9,6 @@ import {
   Button,
   InputAdornment,
   IconButton,
-  Alert,
 } from '@mui/material';
 import MovieIcon from '@mui/icons-material/Movie';
 import Visibility from '@mui/icons-material/Visibility';

@@ -14,7 +14,7 @@ export const SearchBar = ({
 
   // Sync if initialValue changes from parent
   useEffect(() => {
-    setInputValue(initialValue);
+    setInputValue((prev) => (prev !== initialValue ? initialValue : prev));
   }, [initialValue]);
 
   // Trigger parent onSearch when debounced value changes
