@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 
 /**
- * Custom hook to sync state with localStorage.
+ * Custom hook to safely sync state with localStorage.
  * @param {string} key
  * @param {any} initialValue
  * @returns {[any, Function]}
@@ -9,23 +9,34 @@ import { useState, useEffect } from 'react';
 export const useLocalStorage = (key, initialValue) => {
   const [storedValue, setStoredValue] = useState(() => {
     try {
+      if (typeof window === 'undefined') return initialValue;
       const item = window.localStorage.getItem(key);
-      return item ? JSON.parse(item) : initialValue;
+      if (item === null || item === undefined) return initialValue;
+      return JSON.parse(item);
     } catch (error) {
-      console.error(`Error reading localStorage key "${key}":`, error);
+      console.warn(`Error parsing localStorage key "${key}":`, error);
       return initialValue;
     }
   });
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(key, JSON.stringify(storedValue));
-    } catch (error) {
-      console.error(`Error setting localStorage key "${key}":`, error);
-    }
-  }, [key, storedValue]);
+  const setValue = useCallback(
+    (value) => {
+      try {
+        setStoredValue((prev) => {
+          const valueToStore = value instanceof Function ? value(prev) : value;
+          if (typeof window !== 'undefined') {
+            window.localStorage.setItem(key, JSON.stringify(valueToStore));
+          }
+          return valueToStore;
+        });
+      } catch (error) {
+        console.warn(`Error saving localStorage key "${key}":`, error);
+      }
+    },
+    [key]
+  );
 
-  return [storedValue, setStoredValue];
+  return [storedValue, setValue];
 };
 
 export default useLocalStorage;

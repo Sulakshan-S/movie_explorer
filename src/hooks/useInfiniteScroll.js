@@ -1,38 +1,38 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef } from 'react';
 
 /**
  * Custom hook for infinite scrolling using IntersectionObserver.
  * @param {Function} callback Callback when sentinel is in view
  * @param {boolean} hasMore Flag indicating more pages exist
- * @param {boolean} isLoading Flag indicating request is pending
+ * @param {boolean} loading Flag indicating request is currently loading
  * @returns {React.RefObject} Ref to attach to sentinel element
  */
-export const useInfiniteScroll = (callback, hasMore, isLoading) => {
-  const observerRef = useRef(null);
-
-  const sentinelRef = useCallback(
-    (node) => {
-      if (isLoading) return;
-      if (observerRef.current) observerRef.current.disconnect();
-
-      observerRef.current = new IntersectionObserver((entries) => {
-        if (entries[0].isIntersecting && hasMore) {
-          callback();
-        }
-      });
-
-      if (node) observerRef.current.observe(node);
-    },
-    [callback, hasMore, isLoading]
-  );
+export const useInfiniteScroll = (callback, hasMore, loading) => {
+  const sentinelRef = useRef(null);
+  const callbackRef = useRef(callback);
 
   useEffect(() => {
-    return () => {
-      if (observerRef.current) {
-        observerRef.current.disconnect();
+    callbackRef.current = callback;
+  }, [callback]);
+
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || loading || !hasMore) {
+      return;
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting && hasMore && !loading) {
+        callbackRef.current?.();
       }
+    });
+
+    observer.observe(node);
+
+    return () => {
+      observer.disconnect();
     };
-  }, []);
+  }, [hasMore, loading]);
 
   return sentinelRef;
 };
